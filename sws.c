@@ -122,7 +122,7 @@ int main(int argc, char *argv[])
     {
         if (log_file != NULL)
         {
-            if (log_fd = open(log_file, O_CREAT | O_WRONLY | O_APPEND) < 0)
+            if (log_fd = open(log_file, O_CREAT | O_WRONLY | O_APPEND, ) < 0)
             {
                 fprintf(stderr, "file could not be opened: %s\n", sterror(errno));
                 exit(EXIT_FAILURE);
