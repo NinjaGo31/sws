@@ -51,6 +51,8 @@ int main(int argc, char *argv[])
     char *log_file = NULL;
     int port_num = 8080;
 
+    int log_fd;
+
     while ((opt = getopt(argc, argv, "c:dhi:l:p:")) != -1)
     {
         switch (opt)
@@ -115,6 +117,21 @@ int main(int argc, char *argv[])
             fprintf(stderr, "port number is invalid\n");
             exit(EXIT_FAILURE);
         }
+    }
+    if (log)
+    {
+        if (log_file != NULL)
+        {
+            if (log_fd = open(log_file, O_CREAT | O_WRONLY | O_APPEND) < 0)
+            {
+                fprintf(stderr, "file could not be opened: %s\n", sterror(errno));
+                exit(EXIT_FAILURE);
+            }
+        }
+    }
+
+    if (ipv)
+    {
     }
 
     exit(EXIT_SUCCESS);
