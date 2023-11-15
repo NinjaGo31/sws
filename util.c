@@ -9,19 +9,22 @@
 #include <unistd.h>
 
 #define ERROR -1
+#define RET_OK 0
 #define OK 1
 
-void check_dir(char *path) {
+int check_dir(char *path) {
     struct stat sb;
     if (stat(path, &sb) == -1) {
         (void)fprintf(stderr, "stat: path does not exist: %s\n", strerror(errno));
-        exit(EXIT_FAILURE);
+        return ERROR;
     }
 
     if (S_ISDIR(sb.st_mode) == 0) {
         (void)fprintf(stderr, "stat: given path is not directory: %s\n", strerror(errno));
-        exit(EXIT_FAILURE);
+        return ERROR;
     }
+
+    return RET_OK;
 }
 
 int is_int(const char* port) {
@@ -33,9 +36,8 @@ int is_int(const char* port) {
         start = 1;
     }
 
-    for (int i = start; i < length; i++) {
+    for (int i = start; i < length; i++)
         if (!isdigit(port[i])) return ERROR;
-    }
     
     return OK;
 }
@@ -59,5 +61,5 @@ int parse_port(const char* input, int* port) {
         return ERROR;
     }
 
-    return EXIT_SUCCESS;
+    return RET_OK;
 }

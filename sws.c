@@ -1,21 +1,23 @@
 #include <arpa/inet.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
 
+#include <err.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <err.h>
-#include <errno.h>
+#include <time.h>
 
 #include "util.h"
 
-#define ERROR -1
-#define PORT_DEFAULT 8080
+#define ERROR           -1
+#define PORT_DEFAULT    8080
+#define CONNECTIONS     5
 
-static int ip_flags = AF_INET | AF_INET6;
+int server_socket = -1;
 
 void short_usage() {
     fprintf(stderr, "Usage: sws [-dh] [-c dir] [-i address] [-l file] [-p port] <dir>\n");
@@ -31,12 +33,16 @@ int main(int argc, char* argv[]) {
         usage();
         exit(EXIT_FAILURE);
     }
-    
+
+    char *dir = NULL;
     char *cgi_dir = NULL;
     char *ip_addr = NULL;
     char *log_file = NULL;
     int cgi = 0, opt = 0, ip = 0, port = 0, help = 0, log = 0, debug = 0;
+    int domain = AF_INET6;
     int log_fd;
+    struct sockaddr_in server4;
+    struct sockaddr_in6 server6;
 
     while ((opt = getopt(argc, argv, "dhc:i:l:p:")) != -1) {
         switch(opt) {
@@ -49,6 +55,7 @@ int main(int argc, char* argv[]) {
             case 'c':
                 cgi = 1;
                 cgi_dir = optarg;
+                check_dir(cgi_dir);
                 printf("Execute the CGI here: %s\n", cgi_dir);
                 break;
             case 'i':
@@ -72,7 +79,7 @@ int main(int argc, char* argv[]) {
                 if ((parse_port(optarg, &port) == ERROR)) {
                     exit(EXIT_FAILURE);
                 }
-                if (port < 1024 || port > 65535) {
+                if (port < 0 || port > 65535) {
                     fprintf(stderr, "sws: Port number must be in range [1024, 65535]\n");
                     exit(EXIT_FAILURE);
                 }
@@ -84,21 +91,70 @@ int main(int argc, char* argv[]) {
                 exit(EXIT_FAILURE);
         }
     }
+
     argc -= optind;
     argv += optind;
+    dir = argv[optind];
 
     if (help) {
         usage();
         exit(EXIT_SUCCESS);
     }
+    
+    /* Any number other than 0 is considered TRUE */
+    if (!port) port = PORT_DEFAULT;
 
-    if (cgi) {
-        if (cgi_dir != NULL) check_dir(cgi_dir);
-        else {
-            fprintf(stderr, "directory path not inputted\n");
-            exit(EXIT_FAILURE);
+    if (ip) {
+        if (ip_addr != NULL) {
+            if (inet_pton(AF_INET, ip_addr, &(server4.sin_addr)) == 1) {
+                domain = AF_INET;
+            } else {
+                if (inet_pton(AF_INET6, ip_addr, &(server6.sin6_addr)) <= 0) {
+                    fprintf(stderr, "sws: invalid IP address '%s'\n", ip_addr);
+                    exit(EXIT_FAILURE);
+                }
+            }
         }
     }
 
+    if (debug) {
+        printf("Debugging mode\n");
+    } else {
+        if(daemon(1,0) < 0){
+            fprintf(stderr, "sws: daemon\n");
+            exit(EXIT_FAILURE);
+        }
+    }
+    
+    if (domain == AF_INET) {
+        socklen_t addrlen = sizeof(server4);
+        memset(&server4, 0, sizeof(addrlen));
+
+        server4.sin_family = AF_INET;
+        server4.sin_addr.s_addr = INADDR_ANY;
+        server4.sin_port = htons(port);
+
+    } else {
+        socklen_t addrlen = sizeof(server6);
+        memset(&server6, 0, sizeof(addrlen));
+
+        server6.sin6_family = AF_INET6;
+        server6.sin6_addr = in6addr_any;
+        server6.sin6_port = htons(port);
+
+        if (!ip) {
+            int opt;
+            int offset = 0;
+            if (setsockopt(server_socket, IPPROTO_IPV6, IPV6_V6ONLY,
+                    (void *)&offset, sizeof(offset)) < 0) {
+                fprintf(stderr, "sws: failed to set socket options: %s",
+                        strerror(errno));
+                close(server_socket);
+                exit(EXIT_FAILURE);
+            }
+        }
+    }
+    
+    close(server_socket);
     exit(EXIT_SUCCESS);
 }
