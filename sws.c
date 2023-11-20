@@ -1,4 +1,5 @@
 #include <arpa/inet.h>
+#include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 
@@ -8,8 +9,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "util.h"
 
@@ -17,6 +18,7 @@
 #define PORT_DEFAULT    8080
 #define CONNECTIONS     5
 
+extern int client_sockets[CONNECTIONS];
 int server_socket = -1;
 
 void short_usage() {
@@ -28,11 +30,25 @@ void usage() {
     (void)printf(" [-p port] <dir>\n");
 }
 
+void cleaning() {
+    if (fcntl(server_socket, F_GETFD) >= 0) close(server_socket);
+
+    for (int i = 0; i < CONNECTIONS; i++) {
+        if (fcntl(client_sockets[i], F_GETFD) >= 0)
+            close(client_sockets[i]);
+    }
+}
+
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         usage();
         exit(EXIT_FAILURE);
     }
+
+    struct sockaddr_in server4;
+    struct sockaddr_in6 server6;
+    socklen_t addrlen, serv_size;
+    void *server;
 
     char *dir = NULL;
     char *cgi_dir = NULL;
@@ -40,9 +56,9 @@ int main(int argc, char* argv[]) {
     char *log_file = NULL;
     int cgi = 0, opt = 0, ip = 0, port = 0, help = 0, log = 0, debug = 0;
     int domain = AF_INET6;
+    int running = 1;
+    int exitval = EXIT_SUCCESS;
     int log_fd;
-    struct sockaddr_in server4;
-    struct sockaddr_in6 server6;
 
     while ((opt = getopt(argc, argv, "dhc:i:l:p:")) != -1) {
         switch(opt) {
@@ -66,9 +82,9 @@ int main(int argc, char* argv[]) {
             case 'l':
                 log = 1;
                 log_file = optarg;
-                if (log_fd =
+                if ((log_fd =
                     open(log_file, O_CREAT | O_WRONLY | O_APPEND,
-                            S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH) < 0) {
+                            S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH)) < 0) {
                     fprintf(stderr, "sws: file could not be opened: %s\n",
                             strerror(errno));
                     exit(EXIT_FAILURE);
@@ -127,34 +143,77 @@ int main(int argc, char* argv[]) {
     }
     
     if (domain == AF_INET) {
-        socklen_t addrlen = sizeof(server4);
+        addrlen = sizeof(server4);
         memset(&server4, 0, sizeof(addrlen));
 
         server4.sin_family = AF_INET;
         server4.sin_addr.s_addr = INADDR_ANY;
         server4.sin_port = htons(port);
-
+        server = &server4;
+        serv_size = sizeof(server4);
     } else {
-        socklen_t addrlen = sizeof(server6);
+        addrlen = sizeof(server6);
         memset(&server6, 0, sizeof(addrlen));
 
         server6.sin6_family = AF_INET6;
         server6.sin6_addr = in6addr_any;
         server6.sin6_port = htons(port);
+        server = &server6;
+        serv_size = sizeof(server6);
 
         if (!ip) {
-            int opt;
             int offset = 0;
             if (setsockopt(server_socket, IPPROTO_IPV6, IPV6_V6ONLY,
                     (void *)&offset, sizeof(offset)) < 0) {
                 fprintf(stderr, "sws: failed to set socket options: %s",
                         strerror(errno));
-                close(server_socket);
-                exit(EXIT_FAILURE);
+                exitval = EXIT_FAILURE;
+                goto CLEAN;
             }
         }
     }
-    
-    close(server_socket);
-    exit(EXIT_SUCCESS);
+
+    if (bind(server_socket, (struct sockaddr *)&server, serv_size) < 0) {
+        fprintf(stderr, "sws: failed to bind socket to port %d. %s.\n",
+                port, strerror(errno));
+        exitval = EXIT_FAILURE;
+        goto CLEAN;
+    }
+
+    for (int i = 0; i < CONNECTIONS; i++) client_sockets[i] = -1;
+
+    if (listen(server_socket, CONNECTIONS) < 0) {
+        exitval = EXIT_FAILURE;
+        goto CLEAN;
+    }
+
+    fd_set sockset;
+    int max_socket;
+
+    while(running) {
+        FD_ZERO(&sockset);
+        FD_SET(server_socket, &sockset);
+        max_socket = server_socket;
+
+        for (int i = 0; i < CONNECTIONS; i++) {
+            if (client_sockets[i] > -1) FD_SET(client_sockets[i], &sockset);
+            if (client_sockets[i] > max_socket) max_socket = client_sockets[i];
+        }
+
+        if (select(max_socket + 1, &sockset, NULL, NULL, NULL) < 0 
+                && errno != EINTR) {
+            fprintf(stderr, "sws: select() failed. %s.\n", strerror(errno));
+            close(server_socket);
+            exitval = EXIT_FAILURE;
+            goto CLEAN;
+        }
+
+        if (running && FD_ISSET(server_socket, &sockset)) {
+            /* Handle server socket */
+        }
+    }
+
+CLEAN:
+    cleaning();
+    exit(exitval);
 }
