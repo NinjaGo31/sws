@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/wait.h>
 
 #define ERROR -1
 #define RET_OK 0
@@ -28,6 +29,7 @@ int check_dir(char *path) {
 }
 
 int is_int(const char* port) {
+    int i;
     int start = 0;
     int length = strlen(port);
 
@@ -36,7 +38,7 @@ int is_int(const char* port) {
         start = 1;
     }
 
-    for (int i = start; i < length; i++)
+    for (i = start; i < length; i++)
         if (!isdigit(port[i])) return ERROR;
     
     return OK;
@@ -62,4 +64,8 @@ int parse_port(const char* input, int* port) {
     }
 
     return RET_OK;
+}
+
+void reap(){
+    wait(NULL);
 }

@@ -1,6 +1,5 @@
 #include <arpa/inet.h>
 #include <sys/select.h>
-#include <sys/socket.h>
 #include <sys/stat.h>
 
 #include <err.h>
@@ -9,17 +8,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 #include <unistd.h>
 
+#include "server.h"
+#include "sws.h"
 #include "util.h"
 
-#define ERROR           -1
 #define PORT_DEFAULT    8080
-#define CONNECTIONS     5
 
-extern int client_sockets[CONNECTIONS];
-int server_socket = -1;
+server_socket = -1;
+num = 0;
 
 void short_usage() {
     fprintf(stderr, "Usage: sws [-dh] [-c dir] [-i address] [-l file] [-p port] <dir>\n");
@@ -31,34 +29,39 @@ void usage() {
 }
 
 void cleaning() {
+    int i;
     if (fcntl(server_socket, F_GETFD) >= 0) close(server_socket);
 
-    for (int i = 0; i < CONNECTIONS; i++) {
+    for (i = 0; i < CONNECTIONS; i++) {
         if (fcntl(client_sockets[i], F_GETFD) >= 0)
             close(client_sockets[i]);
     }
 }
 
 int main(int argc, char* argv[]) {
-    if (argc < 2) {
-        usage();
-        exit(EXIT_FAILURE);
-    }
 
-    struct sockaddr_in server4;
-    struct sockaddr_in6 server6;
-    socklen_t addrlen, serv_size;
-    void *server;
-
-    char *dir = NULL;
+    /*char *dir = NULL;*/
     char *cgi_dir = NULL;
     char *ip_addr = NULL;
     char *log_file = NULL;
-    int cgi = 0, opt = 0, ip = 0, port = 0, help = 0, log = 0, debug = 0;
+    int opt = 0, ip = 0, port = 0, help = 0, debug = 0;
+    /*int cgi = 0;*/
+    /*int log = 0;*/
     int domain = AF_INET6;
     int running = 1;
     int exitval = EXIT_SUCCESS;
     int log_fd;
+    int i;
+    int max_socket;
+    fd_set sockset;
+
+    struct sockaddr_in server4;
+    struct sockaddr_in6 server6;
+
+    if (argc < 2) {
+        usage();
+        exit(EXIT_FAILURE);
+    }
 
     while ((opt = getopt(argc, argv, "dhc:i:l:p:")) != -1) {
         switch(opt) {
@@ -69,7 +72,7 @@ int main(int argc, char* argv[]) {
                 help = 1;
                 break;
             case 'c':
-                cgi = 1;
+                /*cgi = 1;*/
                 cgi_dir = optarg;
                 check_dir(cgi_dir);
                 printf("Execute the CGI here: %s\n", cgi_dir);
@@ -80,7 +83,7 @@ int main(int argc, char* argv[]) {
                 printf("Get the IPv4/IPv6 address: %s\n", ip_addr);
                 break;
             case 'l':
-                log = 1;
+                /*log = 1;*/
                 log_file = optarg;
                 if ((log_fd =
                     open(log_file, O_CREAT | O_WRONLY | O_APPEND,
@@ -110,7 +113,7 @@ int main(int argc, char* argv[]) {
 
     argc -= optind;
     argv += optind;
-    dir = argv[optind];
+    /*dir = argv[optind];*/
 
     if (help) {
         usage();
@@ -136,7 +139,7 @@ int main(int argc, char* argv[]) {
     if (debug) {
         printf("Debugging mode\n");
     } else {
-        if(daemon(1,0) < 0){
+        if(daemon(1,0) < 0) {
             fprintf(stderr, "sws: daemon\n");
             exit(EXIT_FAILURE);
         }
@@ -168,7 +171,8 @@ int main(int argc, char* argv[]) {
                 fprintf(stderr, "sws: failed to set socket options: %s",
                         strerror(errno));
                 exitval = EXIT_FAILURE;
-                goto CLEAN;
+                cleaning();
+                exit(exitval);
             }
         }
     }
@@ -177,25 +181,27 @@ int main(int argc, char* argv[]) {
         fprintf(stderr, "sws: failed to bind socket to port %d. %s.\n",
                 port, strerror(errno));
         exitval = EXIT_FAILURE;
-        goto CLEAN;
+        cleaning();
     }
 
-    for (int i = 0; i < CONNECTIONS; i++) client_sockets[i] = -1;
+    for (i = 0; i < CONNECTIONS; i++) client_sockets[i] = -1;
 
     if (listen(server_socket, CONNECTIONS) < 0) {
         exitval = EXIT_FAILURE;
-        goto CLEAN;
+        cleaning();
+        exit(exitval);
     }
-
-    fd_set sockset;
-    int max_socket;
+    if(signal(SIGCHLD, reap) == SIG_ERR){
+        fprintf(stderr, "sws: signal() failed\n");
+        return EXIT_FAILURE;
+    }
 
     while(running) {
         FD_ZERO(&sockset);
         FD_SET(server_socket, &sockset);
         max_socket = server_socket;
 
-        for (int i = 0; i < CONNECTIONS; i++) {
+        for (i = 0; i < CONNECTIONS; i++) {
             if (client_sockets[i] > -1) FD_SET(client_sockets[i], &sockset);
             if (client_sockets[i] > max_socket) max_socket = client_sockets[i];
         }
@@ -205,15 +211,21 @@ int main(int argc, char* argv[]) {
             fprintf(stderr, "sws: select() failed. %s.\n", strerror(errno));
             close(server_socket);
             exitval = EXIT_FAILURE;
-            goto CLEAN;
+            cleaning();
+            exit(exitval);
         }
 
         if (running && FD_ISSET(server_socket, &sockset)) {
             /* Handle server socket */
+            if(server_socket_handle() == EXIT_FAILURE) {
+                exitval = EXIT_FAILURE;
+                cleaning();
+                exit(exitval);
+            }
         }
+        
     }
 
-CLEAN:
     cleaning();
     exit(exitval);
 }
