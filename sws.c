@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <signal.h>
 
 #include "server.h"
 #include "sws.h"
@@ -16,8 +17,9 @@
 
 #define PORT_DEFAULT    8080
 
-server_socket = -1;
-num = 0;
+int server_socket = -1;
+int num = 0;
+int l_flag = 0;
 
 void short_usage() {
     fprintf(stderr, "Usage: sws [-dh] [-c dir] [-i address] [-l file] [-p port] <dir>\n");
@@ -46,17 +48,17 @@ int main(int argc, char* argv[]) {
     char *log_file = NULL;
     int opt = 0, ip = 0, port = 0, help = 0, debug = 0;
     /*int cgi = 0;*/
-    /*int log = 0;*/
     int domain = AF_INET6;
     int running = 1;
     int exitval = EXIT_SUCCESS;
-    int log_fd;
+    /*int log_fd;*/
     int i;
     int max_socket;
     fd_set sockset;
 
     struct sockaddr_in server4;
     struct sockaddr_in6 server6;
+    socklen_t addrlen, serv_size;
 
     if (argc < 2) {
         usage();
@@ -83,7 +85,7 @@ int main(int argc, char* argv[]) {
                 printf("Get the IPv4/IPv6 address: %s\n", ip_addr);
                 break;
             case 'l':
-                /*log = 1;*/
+                l_flag = 1;
                 log_file = optarg;
                 if ((log_fd =
                     open(log_file, O_CREAT | O_WRONLY | O_APPEND,
