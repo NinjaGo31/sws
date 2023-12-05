@@ -17,17 +17,25 @@
 
 #define PORT_DEFAULT    8080
 
+static const char help[] = 
+    " ./sws [-dh] [-i address] [-l file] [-p port number] dir\n"
+    " -d                Enter debug mode\n"
+    " -h                Print this help message\n"
+    " -i address        Make server on this IPv4/IPv6 address\n"
+    " -l file           Log entries into file\n"
+    " -p port number    Make server on this port\n"
+    ;
+
 int server_socket = -1;
 int num = 0;
-int l_flag = 0;
+int c_flag = 0, l_flag = 0;
 
 void short_usage() {
     fprintf(stderr, "Usage: sws [-dh] [-c dir] [-i address] [-l file] [-p port] <dir>\n");
 }
 
 void usage() {
-    (void)printf("Usage: sws [-dh] [-c dir] [-i address] [-l file]");
-    (void)printf(" [-p port] <dir>\n");
+    (void)printf("%s", help);
 }
 
 void cleaning() {
@@ -41,13 +49,9 @@ void cleaning() {
 }
 
 int main(int argc, char* argv[]) {
-
-    /*char *dir = NULL;*/
-    char *cgi_dir = NULL;
     char *ip_addr = NULL;
-    char *log_file = NULL;
+
     int opt = 0, ip = 0, port = 0, help = 0, debug = 0;
-    /*int cgi = 0;*/
     int domain = AF_INET6;
     int running = 1;
     int exitval = EXIT_SUCCESS;
@@ -74,7 +78,7 @@ int main(int argc, char* argv[]) {
                 help = 1;
                 break;
             case 'c':
-                /*cgi = 1;*/
+                c_flag = 1;
                 cgi_dir = optarg;
                 check_dir(cgi_dir);
                 printf("Execute the CGI here: %s\n", cgi_dir);
@@ -115,13 +119,18 @@ int main(int argc, char* argv[]) {
 
     argc -= optind;
     argv += optind;
-    /*dir = argv[optind];*/
-
+    
     if (help) {
         usage();
         exit(EXIT_SUCCESS);
     }
     
+    if ((dir = getpath(argv[optind])) == NULL) {
+        exitval = EXIT_FAILURE;
+        cleaning();
+        exit(exitval);
+    }
+
     /* Any number other than 0 is considered TRUE */
     if (!port) port = PORT_DEFAULT;
 

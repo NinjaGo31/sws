@@ -3,6 +3,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,6 +13,23 @@
 #define ERROR -1
 #define RET_OK 0
 #define OK 1
+
+char *getpath(char *dir) {
+    char buffer[PATH_MAX];
+    char *result, *path;
+
+    if (dir[0] == '/' || dir[0] == '\\') {
+        dir++;
+    }
+
+    if ((result = realpath(dir, buffer)) == NULL) {
+        fprintf(stderr, "sws: failed to make resolved path: %s\n",
+                strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+
+    return result; 
+}
 
 int check_dir(char *path) {
     struct stat sb;

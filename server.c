@@ -2,6 +2,7 @@
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/param.h>
 
 #include <err.h>
 #include <errno.h>
@@ -23,17 +24,38 @@
 
 enum client_request {REQUEST_TYPE, URL, HTTP_TYPE};
 
+void logging(int ip_addr, char err_time_buf, const char *request, int code, char content_len){
+    char log_output[BUFSIZ];
+    int nr;
+
+    sprintf(log_output, "%d %s \"%s\" %d %c\r\n", ip_addr, err_time_buf, request, code, content_len);
+
+    if(debug){
+        fprintf(stdout, "%d %s \"%s\" %d %c\r\n", ip_addr, err_time_buf, request, code, content_len )
+    }
+    else if(l_flag){
+        if((nr = write(log_fd, log_output, sizeof(log_output))) < 0){
+            fprintf(stderr, "sws: failed to write to log. %s.\n",
+                strerror(errno));
+        }
+    }
+
+}
+
 void send_response(int clientfd, int code, const char *request) {
     char* status_str;
     char log_info[BUFSIZ];
     time_t curr_time;
+    time_t err_time;
     char general_info[BUFSIZ];
     char time_buf[BUFSIZ];
+    char err_time_buf[BUFSIZ]
     char last_mod_buf[BUFSIZ];
     char content_len[BUFSIZ];
     struct tm gmt;
     struct stat last_mod;
     int error_flag = 0;
+    int ip_addr;
 
     switch(code) {
         case 200:
@@ -87,62 +109,61 @@ void send_response(int clientfd, int code, const char *request) {
     sprintf(general_info, "%s %d %s", HTTP, code, status_str);
     send(clientfd, general_info, strlen(general_info), 0);
 
-    if (error_flag == 1) {
-        if (l_flag && log_fd > 0) {
-            /* Enter logging function */
-        }
-    }
-    
+   
     /*send date*/
     time(&curr_time);
     gmt = *gmtime(&curr_time);
-    strftime(time_buf, sizeof(time_buf), "Date: %A, %d %B %Y %H:%M:%S GMT", &gmt);
+    strftime(time_buf, sizeof(time_buf), "Date: %A, %d %B %Y %H:%M:%S GMT\r\n", &gmt);
     send(clientfd, time_buf, strlen(time_buf),0);
-
-    if (l_flag) {
-        // sprintf(log_info, "%s ", ip_addr);
-        strftime(time_buf, sizeof(time_buf), "%Y-%m-%dT%H:%M:%SZ", &gmt);
-        strncat(log_info, time_buf, strlen(time_buf));
-    }
 
     /*send server*/
     send(clientfd, SERVER, strlen(SERVER), 0);
 
     /*send last modified*/
-    stat(request, &last_mod);
+    stat(request[URL], &last_mod);
     gmt = *gmtime(&last_mod.st_mtime);
-    strftime(last_mod_buf, sizeof(last_mod_buf), "Last-Modified: %A, %d %B %Y %H:%M:%S GMT", &gmt);
+    strftime(last_mod_buf, sizeof(last_mod_buf), "Last-Modified: %A, %d %B %Y %H:%M:%S GMT\r\n", &gmt);
     send(clientfd, last_mod_buf, strlen(last_mod_buf), 0);
     
     /*send content type*/
     send(clientfd, CONTENT_TYPE, strlen(CONTENT_TYPE), 0);
 
     /*send content length*/
-    sprintf(content_len, "Content-Length: %ld", last_mod.st_size);
+    if(error_flag == 1){
+        sprintf(content_len, "Content-Length: 0\r\n");
+    }else{
+        sprintf(content_len, "Content-Length: %ld\r\n", last_mod.st_size);
+    }
     send(clientfd, content_len, sizeof(content_len), 0);
 
-    if (l_flag) {
-        /*strncat(log_info, " \"", 2);
-        strncat(log_info, request, strlen(request));
-        strncat(log_info, "\"", 2);
-        sprintf(log_info, "%s %d %d", log_info, code, last_mod.st_size);*/
+    if (l_flag && log_fd > 0 || debug) {
+        /*get IP address*/
+        ip_addr = inet_ntop(server.sin_addr);
+        /*time request was recieved*/
+        time(&err_time);
+        gmt = *gmtime(&err_time);
+        strftime(err_time_buf, sizeof(err_time_buf), "%Y-%B-%dT%H:%M:%SZ\r\n", &gmt);
+        /* Enter logging function */
+        logging(ip_addr, err_time_buf, request, code, content_len);   
     }
+    
 }
 
-
-
 void parse(char* buffer, int clientfd) {
-    char *other_requests[7] = {"POST", "PUT", "DELETE", "CONNECT", 
+    char *other_requests[] = {"POST", "PUT", "DELETE", "CONNECT", 
                                 "OPTIONS", "TRACE", "PATCH"};
     /*char* temp;
     char* content;*/
     char* buf[PARSE_SIZE];
+    char path[MAXPATHLEN];
+
     /*char modify_time[BUFSIZ];*/
     int i, file_fd;
     /*int content_len;*/
     /*int total_len = 0;*/
     int invalid = 1;
-    
+    size_t arr_len = sizeof(other_requests) / sizeof(other_requests[0]);
+
     /* Parsing only for ONE line. Must parse until empty line is read. */
     char* arg = strtok(buffer, " ");
     while(arg != NULL) {
@@ -150,6 +171,7 @@ void parse(char* buffer, int clientfd) {
         arg = strtok(NULL, " ");
     }
     buf[i] = NULL;
+
 
     if ((strncmp(buf[REQUEST_TYPE], "GET", 3) == 0)) {
         /* Implement GET functionality */
@@ -170,9 +192,9 @@ void parse(char* buffer, int clientfd) {
         // create an absolute path using this argument.
         if ((file_fd = open(buf[URL], O_RDONLY)) < 0) {
             if (errno == ENOENT) {
-                send_response(clientfd, 404, buffer);
+                send_response(clientfd, 404, "GET");
             } else {
-                send_response(clientfd, 400, buffer);
+                send_response(clientfd, 400, "GET");
             }
         }
         /*while ((content_len = read(file_fd, temp, BUFSIZ)) > 0) {
@@ -184,21 +206,22 @@ void parse(char* buffer, int clientfd) {
         // ANSWER: Just grab the header information of the file and DO NOT read the content of the file.
         if ((file_fd = open(buf[URL], O_RDONLY)) < 0) {
             if (errno == ENOENT) {
-                send_response(clientfd, 404, buffer);
+                send_response(clientfd, 404, "HEAD");
             } else {
-                send_response(clientfd, 400, buffer);
+                send_response(clientfd, 400, "HEAD");
             }
         }
         send_response(clientfd, 200, buffer);
 
     } else {
         /* Might need to figure out how to get size of string array. */
-        for (i = 0; i < 7; i++) {
+        for (i = 0; i < arr_len; i++) {
             if(strncmp(buf[REQUEST_TYPE], other_requests[i], 
                 strlen(other_requests[i])) == 0) {
                     invalid = 0;
                     send_response(clientfd, 501, buffer);
-                }
+                    break;
+            }
         }
         if (invalid) send_response(clientfd, 400, buffer);
         /* Child process exits successfully */
@@ -239,7 +262,7 @@ int server_socket_handle() {
         fprintf(stderr, "sws: unable to fork process %s\n", strerror(errno));
         return EXIT_FAILURE;
     } else if(pid == 0) {
-        if (alarm(TIMEOUT) == (unsigned int) -1){
+        if (alarm(TIMEOUT) == (unsigned int) -1) {
             fprintf(stderr, "sws: alarm unable to set timeout %s\n", strerror(errno));
         }
 
@@ -249,4 +272,83 @@ int server_socket_handle() {
     (void)alarm(0);
     /*If alarm goes off and no read was made, just terminate the connection.*/
     return EXIT_SUCCESS;
+}
+
+void exec_cgi(int clientfd, const char* request) {
+    int fdout[2];
+    int fderr[2];
+    char *outbuf[BUFSIZ];
+    char *errbuf[BUFSIZ]; 
+    char *executable[BUFSIZ];
+    pid_t pid;
+
+    if (pipe(fdout) < 0) {
+        (void)fprintf(stderr, "sws: pipe : %s\n", strerror(errno));
+        send_response(clientfd, 500, request);
+    }
+
+    if (pipe(fderr) < 0) {
+        (void)fprintf(stderr, "sws: pipe : %s\n", strerror(errno));
+        send_response(clientfd, 500, request);
+    }
+
+    /*not sure if signals are needed*/
+    if ((pid = fork()) < 0) {
+        (void)fprintf(stderr, "sws: fork : %s\n", strerror(errno));
+        send_response(clientfd, 500, request);
+    }
+
+    if (pid > 0) {
+        /*parent process*/
+        /*close write ends*/
+        (void)close(fdout[1]);
+        (void)close(fderr[1]);
+
+        if ((n = read(fdout[0], outbuf, outlen)) < 0)
+        {
+            (void)fprintf(stderr, "sws: Unable to read from pipe: %s\n", strerror(errno));
+            send_response(clientfd, 500, request);
+        }
+
+        if ((n = read(fderr[0], errbuf, errlen)) < 0)
+        {
+            (void)fprintf(stderr, "sws: Unable to read from pipe: %s\n", strerror(errno));
+            send_response(clientfd, 500, request);
+        }
+        /*close read ends*/
+        (void)close(fdout[0]);
+        (void)close(fderr[0]);
+
+        if (waitpid(pid, NULL, 0) < 0)
+        {
+            (void)fprintf(stderr, "sws: waitpid: %s\n", strerror(errno));
+            send_response(clientfd, 500, request);
+        }
+    }else{
+        /*child process*/
+        /*close read ends*/
+        (void)close(fdout[0]);
+        (void)close(fderr[0]);
+
+        if (dup2(fdout[1], STDOUT_FILENO) < 0){
+            (void)fprintf(stderr, "sws: dup2 to stdout: %s\n", strerror(errno));
+            return EXIT_FAILURE;
+        }
+
+        if (dup2(fderr[1], STDERR_FILENO) < 0){
+            (void)fprintf(stderr, "sws: dup2 to stderr: %s\n", strerror(errno));
+            return EXIT_FAILURE;
+        }
+
+        if (chdir(cgi_dir) < 0){
+            (void)fprintf(stderr, "sws: could not change to directory: %s\n", strerror(errno));
+            return EXIT_FAILURE;
+        }
+        /*need to implement execvpe*/
+
+        /*close write ends*/
+        (void)close(fdout[1]);
+        (void)close(fderr[1]);
+    
+    }
 }
