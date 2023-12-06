@@ -15,6 +15,7 @@
 
 #include "server.h"
 #include "sws.h"
+#include "util.h"
 
 #define PARSE_SIZE 4
 #define TIMEOUT 60
@@ -22,7 +23,7 @@
 #define CONTENT_TYPE "Content-Type: text/html\n"
 #define HTTP "HTTP/1.0 "
 
-enum client_request {REQUEST_TYPE, URL, HTTP_TYPE};
+enum client_request {REQUEST_TYPE, URI, HTTP_TYPE};
 
 void logging(int ip_addr, char err_time_buf, const char *request, int code, char content_len){
     char log_output[BUFSIZ];
@@ -31,7 +32,7 @@ void logging(int ip_addr, char err_time_buf, const char *request, int code, char
     sprintf(log_output, "%d %s \"%s\" %d %c\r\n", ip_addr, err_time_buf, request, code, content_len);
 
     if(debug){
-        fprintf(stdout, "%d %s \"%s\" %d %c\r\n", ip_addr, err_time_buf, request, code, content_len )
+        fprintf(stdout, "%d %s \"%s\" %d %c\r\n", ip_addr, err_time_buf, request, code, content_len);
     }
     else if(l_flag){
         if((nr = write(log_fd, log_output, sizeof(log_output))) < 0){
@@ -42,7 +43,7 @@ void logging(int ip_addr, char err_time_buf, const char *request, int code, char
 
 }
 
-void send_response(int clientfd, int code, const char *request) {
+void send_response(int clientfd, int code, const char *request[]) {
     char* status_str;
     char log_info[BUFSIZ];
     time_t curr_time;
@@ -120,7 +121,7 @@ void send_response(int clientfd, int code, const char *request) {
     send(clientfd, SERVER, strlen(SERVER), 0);
 
     /*send last modified*/
-    stat(request[URL], &last_mod);
+    stat(request[URI], &last_mod);
     gmt = *gmtime(&last_mod.st_mtime);
     strftime(last_mod_buf, sizeof(last_mod_buf), "Last-Modified: %A, %d %B %Y %H:%M:%S GMT\r\n", &gmt);
     send(clientfd, last_mod_buf, strlen(last_mod_buf), 0);
@@ -146,32 +147,52 @@ void send_response(int clientfd, int code, const char *request) {
         /* Enter logging function */
         logging(ip_addr, err_time_buf, request, code, content_len);   
     }
-    
+
+    if (strncmp(request[REQUEST_TYPE], "GET", 3) == 0) {
+        // Read the file back to the client
+    }
 }
 
 void parse(char* buffer, int clientfd) {
     char *other_requests[] = {"POST", "PUT", "DELETE", "CONNECT", 
                                 "OPTIONS", "TRACE", "PATCH"};
-    /*char* temp;
-    char* content;*/
-    char* buf[PARSE_SIZE];
+    char *buf[PARSE_SIZE], *lines[PARSE_SIZE];
+    char *client_dir;
+    char *arg, *traverse, *line, *nul;
     char path[MAXPATHLEN];
 
-    /*char modify_time[BUFSIZ];*/
-    int i, file_fd;
-    /*int content_len;*/
-    /*int total_len = 0;*/
-    int invalid = 1;
+    int i, j, file_fd;
+    int error = 0, invalid = 1;
     size_t arr_len = sizeof(other_requests) / sizeof(other_requests[0]);
+    size_t size = strlen(buffer);
 
     /* Parsing only for ONE line. Must parse until empty line is read. */
-    char* arg = strtok(buffer, " ");
+    traverse = buffer;
+    i = 0;
+    while((traverse < buffer + size) &&
+            ((nul = strstr(traverse, "\n")) != NULL)) {
+        if (traverse == nul) break;
+        lines[i] = traverse;
+        *nul = '\0';
+        i++;
+        traverse = nul + 1;
+    }
+    lines[i] = NULL;
+
+    i = 0;
+    arg = strtok(lines[0], " ");
     while(arg != NULL) {
         buf[i++] = arg;
         arg = strtok(NULL, " ");
     }
     buf[i] = NULL;
 
+    if ((client_dir = getpath(buf[URI])) == NULL) {
+        if (errno == ENOENT) send_response(clientfd, 404, buf);
+        else send_response(clientfd, 400, buf);
+    } else if (strncmp(dir, client_dir, strlen(dir)) != 0) {
+        send_response(clientfd, 403, buf);
+    }
 
     if ((strncmp(buf[REQUEST_TYPE], "GET", 3) == 0)) {
         /* Implement GET functionality */
@@ -181,7 +202,6 @@ void parse(char* buffer, int clientfd) {
         // - The client's request is OUTSIDE of docroot (Send 403)
         // /home/<user>/sws --> /docroot
 
-        // faccessat(2) might be your best friend in this situation (Would be useful)
         // How can we keep track of where the client is trying to access? Parse by '/' and
         // keep tally of the name of the directory location?
         // ANSWER: Construct an absolute/real path with the docroot path and client path,
@@ -190,46 +210,47 @@ void parse(char* buffer, int clientfd) {
         // Do we hard code the docroot path?
         // No. The last argument is the directory in which you are serving content from. In this case,
         // create an absolute path using this argument.
-        if ((file_fd = open(buf[URL], O_RDONLY)) < 0) {
+        if ((file_fd = open(buf[URI], O_RDONLY)) < 0) {
             if (errno == ENOENT) {
-                send_response(clientfd, 404, "GET");
+                error = 1;
+                send_response(clientfd, 404, buf);
             } else {
-                send_response(clientfd, 400, "GET");
+                error = 1;
+                send_response(clientfd, 400, buf);
             }
         }
-        /*while ((content_len = read(file_fd, temp, BUFSIZ)) > 0) {
-            strncat(content, temp, strlen(temp));
-        }*/
     } else if (strncmp(buf[REQUEST_TYPE], "HEAD", 4) == 0) {
-        /* Implement HEAD functionality */
-        // At what point in the file does HEAD stop reading? Are there any examples that can be given?
-        // ANSWER: Just grab the header information of the file and DO NOT read the content of the file.
-        if ((file_fd = open(buf[URL], O_RDONLY)) < 0) {
+        if ((file_fd = open(buf[URI], O_RDONLY)) < 0) {
             if (errno == ENOENT) {
-                send_response(clientfd, 404, "HEAD");
+                error = 1;
+                send_response(clientfd, 404, buf);
             } else {
-                send_response(clientfd, 400, "HEAD");
+                error = 1;
+                send_response(clientfd, 400, buf);
             }
         }
-        send_response(clientfd, 200, buffer);
-
     } else {
-        /* Might need to figure out how to get size of string array. */
         for (i = 0; i < arr_len; i++) {
             if(strncmp(buf[REQUEST_TYPE], other_requests[i], 
                 strlen(other_requests[i])) == 0) {
                     invalid = 0;
-                    send_response(clientfd, 501, buffer);
+                    error = 1;
+                    send_response(clientfd, 501, buf);
                     break;
             }
         }
-        if (invalid) send_response(clientfd, 400, buffer);
+        if (invalid) {
+            error = 1
+            send_response(clientfd, 400, buf);
+        }
         /* Child process exits successfully */
     }
     
-    if (((strncmp(buf[HTTP_TYPE], "HTTP/1.0", 8) != 0))) {
-        send_response(clientfd, 501, buffer);
+    if ((strncmp(buf[HTTP_TYPE], "HTTP/1.0", 8) != 0)) {
+        invalid = 0;
+        send_response(clientfd, 501, buf);
     }
+    if (!invalid) send_response(clientfd, 200, buf);
 }
 
 void handle_connection(int socket_fd) {

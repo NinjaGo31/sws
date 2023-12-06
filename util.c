@@ -25,7 +25,7 @@ char *getpath(char *dir) {
     if ((result = realpath(dir, buffer)) == NULL) {
         fprintf(stderr, "sws: failed to make resolved path: %s\n",
                 strerror(errno));
-        exit(EXIT_FAILURE);
+        return NULL;
     }
 
     return result; 
