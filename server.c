@@ -12,6 +12,7 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <libgen.h>
 
 #include "server.h"
 #include "sws.h"
@@ -53,7 +54,9 @@ char ** cgi_environment(char **environment, const char *request[], char *query_s
     sprintf(port_buf, "SERVER_PORT=%d\n", ntohs(server.sin_port));
     environment[i++] = port_buf;
     environment[i++] = "SERVER_PROTOCOL=HTTP/1.0";
-    environment[i++] = "SERVER_SOFTWARE="; /*need to implement*/
+    environment[i++] = "SERVER_SOFTWARE=Apache/2.4.54 (Unix) OpenSSL/1.1.1k";
+
+    return environment;
 
 }
 void exec_cgi(int clientfd, const char* request, char *query_str) {
@@ -63,7 +66,15 @@ void exec_cgi(int clientfd, const char* request, char *query_str) {
     char *errbuf[BUFSIZ]; 
     char *executable[BUFSIZ];
     char *environment[12];
+    char *command_args[2];
     pid_t pid;
+
+    executable[0] = '\0';
+    strcat(executable, "./");
+    strcat(executable, basename(request[URI]));
+
+    command_args[0] = basename(request(URI));
+    command_args[1] = '\0';
 
     if (pipe(fdout) < 0) {
         (void)fprintf(stderr, "sws: pipe : %s\n", strerror(errno));
@@ -75,11 +86,13 @@ void exec_cgi(int clientfd, const char* request, char *query_str) {
         send_response(clientfd, 500, request);
     }
     /*set environment*/
+    cgi_environment(environment, request, query_str);
 
     /*not sure if signals are needed*/
     if ((pid = fork()) < 0) {
         (void)fprintf(stderr, "sws: fork : %s\n", strerror(errno));
         send_response(clientfd, 500, request);
+        /*return EXIT_FAILURE;*/
     }
 
     if (pid > 0) {
@@ -88,25 +101,25 @@ void exec_cgi(int clientfd, const char* request, char *query_str) {
         (void)close(fdout[1]);
         (void)close(fderr[1]);
 
-        if ((n = read(fdout[0], outbuf, outlen)) < 0)
-        {
+        if ((n = read(fdout[0], outbuf, outlen)) < 0){
             (void)fprintf(stderr, "sws: Unable to read from pipe: %s\n", strerror(errno));
             send_response(clientfd, 500, request);
+            /*return EXIT_FAILURE;*/
         }
 
-        if ((n = read(fderr[0], errbuf, errlen)) < 0)
-        {
+        if ((n = read(fderr[0], errbuf, errlen)) < 0) {
             (void)fprintf(stderr, "sws: Unable to read from pipe: %s\n", strerror(errno));
             send_response(clientfd, 500, request);
+            /*return EXIT_FAILURE;*/
         }
         /*close read ends*/
         (void)close(fdout[0]);
         (void)close(fderr[0]);
 
-        if (waitpid(pid, NULL, 0) < 0)
-        {
+        if (waitpid(pid, NULL, 0) < 0){
             (void)fprintf(stderr, "sws: waitpid: %s\n", strerror(errno));
             send_response(clientfd, 500, request);
+            /*return EXIT_FAILURE;*/
         }
     }else{
         /*child process*/
@@ -116,20 +129,23 @@ void exec_cgi(int clientfd, const char* request, char *query_str) {
 
         if (dup2(fdout[1], STDOUT_FILENO) < 0){
             (void)fprintf(stderr, "sws: dup2 to stdout: %s\n", strerror(errno));
-            return EXIT_FAILURE;
+            send_response(clientfd, 500, request);
+            /*return EXIT_FAILURE;*/
         }
 
         if (dup2(fderr[1], STDERR_FILENO) < 0){
             (void)fprintf(stderr, "sws: dup2 to stderr: %s\n", strerror(errno));
-            return EXIT_FAILURE;
+            send_response(clientfd, 500, request);
+           /*return EXIT_FAILURE;*/
         }
 
         if (chdir(cgi_dir) < 0){
             (void)fprintf(stderr, "sws: could not change to directory: %s\n", strerror(errno));
-            return EXIT_FAILURE;
+            send_response(clientfd, 500, request);
+           /*return EXIT_FAILURE;*/
         }
         /*need to implement execvpe*/
-
+        execvpe(executable, command_args, environment);
         /*close write ends*/
         (void)close(fdout[1]);
         (void)close(fderr[1]);
