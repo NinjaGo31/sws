@@ -25,6 +25,118 @@
 
 enum client_request {REQUEST_TYPE, URI, HTTP_TYPE};
 
+char ** cgi_environment(char **environment, const char *request[], char *query_str){
+    int i = 0;
+    char port_buf[BUFSIZ];
+    char req_buf[BUFSIZ];
+    char serv_name[BUFSIZ];
+    char script_name[BUFSIZ];
+    char query[BUFSIZ];
+
+    if(getsockname(server_socket,(struct sockaddr*) server, &serv_size) == -1){
+        fprintf(sterr, "sws: getsockname error: %s\n", strerror(errno));
+    }
+    
+    
+    environment[i++] = "AUTH_TYPE=Basic";
+    environment[i++] = "GATEWAY_INTERFACE=CGI/1.1";
+    environment[i++] = "PATH_INFO="; /*need to implement*/
+    sprintf(query, "QUERY_STRING=%s\n", query_str);
+    environment[i++] = query;
+    environment[i++] = "REMOTE_ADDR="; /*need to implement*/
+    sprintf(req_buf, "REQUEST_METHOD=%s\n", request[REQUEST_TYPE]);
+    environment[i++] = req_buf;
+    sprintf(script_name, "SCRIPT_NAME=%s\n", request[URI]);
+    environment[i++] = script_name;
+    sprintf(serv_name, "SERVER_NAME=%s\n", inet_ntoa(server.sin_addr));
+    environment[i++] = serv_name;
+    sprintf(port_buf, "SERVER_PORT=%d\n", ntohs(server.sin_port));
+    environment[i++] = port_buf;
+    environment[i++] = "SERVER_PROTOCOL=HTTP/1.0";
+    environment[i++] = "SERVER_SOFTWARE="; /*need to implement*/
+
+}
+void exec_cgi(int clientfd, const char* request, char *query_str) {
+    int fdout[2];
+    int fderr[2];
+    char *outbuf[BUFSIZ];
+    char *errbuf[BUFSIZ]; 
+    char *executable[BUFSIZ];
+    char *environment[12];
+    pid_t pid;
+
+    if (pipe(fdout) < 0) {
+        (void)fprintf(stderr, "sws: pipe : %s\n", strerror(errno));
+        send_response(clientfd, 500, request);
+    }
+
+    if (pipe(fderr) < 0) {
+        (void)fprintf(stderr, "sws: pipe : %s\n", strerror(errno));
+        send_response(clientfd, 500, request);
+    }
+    /*set environment*/
+
+    /*not sure if signals are needed*/
+    if ((pid = fork()) < 0) {
+        (void)fprintf(stderr, "sws: fork : %s\n", strerror(errno));
+        send_response(clientfd, 500, request);
+    }
+
+    if (pid > 0) {
+        /*parent process*/
+        /*close write ends*/
+        (void)close(fdout[1]);
+        (void)close(fderr[1]);
+
+        if ((n = read(fdout[0], outbuf, outlen)) < 0)
+        {
+            (void)fprintf(stderr, "sws: Unable to read from pipe: %s\n", strerror(errno));
+            send_response(clientfd, 500, request);
+        }
+
+        if ((n = read(fderr[0], errbuf, errlen)) < 0)
+        {
+            (void)fprintf(stderr, "sws: Unable to read from pipe: %s\n", strerror(errno));
+            send_response(clientfd, 500, request);
+        }
+        /*close read ends*/
+        (void)close(fdout[0]);
+        (void)close(fderr[0]);
+
+        if (waitpid(pid, NULL, 0) < 0)
+        {
+            (void)fprintf(stderr, "sws: waitpid: %s\n", strerror(errno));
+            send_response(clientfd, 500, request);
+        }
+    }else{
+        /*child process*/
+        /*close read ends*/
+        (void)close(fdout[0]);
+        (void)close(fderr[0]);
+
+        if (dup2(fdout[1], STDOUT_FILENO) < 0){
+            (void)fprintf(stderr, "sws: dup2 to stdout: %s\n", strerror(errno));
+            return EXIT_FAILURE;
+        }
+
+        if (dup2(fderr[1], STDERR_FILENO) < 0){
+            (void)fprintf(stderr, "sws: dup2 to stderr: %s\n", strerror(errno));
+            return EXIT_FAILURE;
+        }
+
+        if (chdir(cgi_dir) < 0){
+            (void)fprintf(stderr, "sws: could not change to directory: %s\n", strerror(errno));
+            return EXIT_FAILURE;
+        }
+        /*need to implement execvpe*/
+
+        /*close write ends*/
+        (void)close(fdout[1]);
+        (void)close(fderr[1]);
+    
+    }
+}
+
 void logging(int ip_addr, char err_time_buf, const char *request, int code, char content_len){
     char log_output[BUFSIZ];
     int nr;
@@ -153,20 +265,21 @@ void send_response(int clientfd, int code, const char *request[]) {
     }
 }
 
-void parse(char* buffer, int clientfd) {
+void parse(char buffer[], int clientfd) {
     char *other_requests[] = {"POST", "PUT", "DELETE", "CONNECT", 
                                 "OPTIONS", "TRACE", "PATCH"};
-    char *buf[PARSE_SIZE], *lines[PARSE_SIZE];
-    char *client_dir;
+    char *buf[BUFSIZ], *lines[BUFSIZ];
+    char *client_dir, *query_str, *tmp;
     char *arg, *traverse, *line, *nul;
-    char path[MAXPATHLEN];
 
-    int i, j, file_fd;
-    int error = 0, invalid = 1;
+    int i, file_fd;
+    int error = 0, invalid = 1, query_flag = 0, mod_since = 0;
     size_t arr_len = sizeof(other_requests) / sizeof(other_requests[0]);
     size_t size = strlen(buffer);
 
-    /* Parsing only for ONE line. Must parse until empty line is read. */
+    struct tm time_req;
+    memset(&time_req, 0, sizeof(time_req));
+
     traverse = buffer;
     i = 0;
     while((traverse < buffer + size) &&
@@ -186,6 +299,21 @@ void parse(char* buffer, int clientfd) {
         arg = strtok(NULL, " ");
     }
     buf[i] = NULL;
+    
+    buf[URI] = strtok(buf[URI], "?");
+    tmp = strtok(NULL, "?");
+    if (tmp != NULL) query_str = tmp;
+
+    if (lines[1] != NULL) {
+        arg = strtok(lines[1], ":");
+        if (strncmp(arg, "If-Modified-Since") != 0) {
+            send_response(clientfd, 400, buf);
+        } else {
+            mod_since = 1;
+            arg = strtok(NULL, ":");
+            strptime(arg, "%A, %d %m %Y %H:%M:%S", &time_req);
+        }
+    }
 
     if ((client_dir = getpath(buf[URI])) == NULL) {
         if (errno == ENOENT) send_response(clientfd, 404, buf);
@@ -293,83 +421,4 @@ int server_socket_handle() {
     (void)alarm(0);
     /*If alarm goes off and no read was made, just terminate the connection.*/
     return EXIT_SUCCESS;
-}
-
-void exec_cgi(int clientfd, const char* request) {
-    int fdout[2];
-    int fderr[2];
-    char *outbuf[BUFSIZ];
-    char *errbuf[BUFSIZ]; 
-    char *executable[BUFSIZ];
-    pid_t pid;
-
-    if (pipe(fdout) < 0) {
-        (void)fprintf(stderr, "sws: pipe : %s\n", strerror(errno));
-        send_response(clientfd, 500, request);
-    }
-
-    if (pipe(fderr) < 0) {
-        (void)fprintf(stderr, "sws: pipe : %s\n", strerror(errno));
-        send_response(clientfd, 500, request);
-    }
-
-    /*not sure if signals are needed*/
-    if ((pid = fork()) < 0) {
-        (void)fprintf(stderr, "sws: fork : %s\n", strerror(errno));
-        send_response(clientfd, 500, request);
-    }
-
-    if (pid > 0) {
-        /*parent process*/
-        /*close write ends*/
-        (void)close(fdout[1]);
-        (void)close(fderr[1]);
-
-        if ((n = read(fdout[0], outbuf, outlen)) < 0)
-        {
-            (void)fprintf(stderr, "sws: Unable to read from pipe: %s\n", strerror(errno));
-            send_response(clientfd, 500, request);
-        }
-
-        if ((n = read(fderr[0], errbuf, errlen)) < 0)
-        {
-            (void)fprintf(stderr, "sws: Unable to read from pipe: %s\n", strerror(errno));
-            send_response(clientfd, 500, request);
-        }
-        /*close read ends*/
-        (void)close(fdout[0]);
-        (void)close(fderr[0]);
-
-        if (waitpid(pid, NULL, 0) < 0)
-        {
-            (void)fprintf(stderr, "sws: waitpid: %s\n", strerror(errno));
-            send_response(clientfd, 500, request);
-        }
-    }else{
-        /*child process*/
-        /*close read ends*/
-        (void)close(fdout[0]);
-        (void)close(fderr[0]);
-
-        if (dup2(fdout[1], STDOUT_FILENO) < 0){
-            (void)fprintf(stderr, "sws: dup2 to stdout: %s\n", strerror(errno));
-            return EXIT_FAILURE;
-        }
-
-        if (dup2(fderr[1], STDERR_FILENO) < 0){
-            (void)fprintf(stderr, "sws: dup2 to stderr: %s\n", strerror(errno));
-            return EXIT_FAILURE;
-        }
-
-        if (chdir(cgi_dir) < 0){
-            (void)fprintf(stderr, "sws: could not change to directory: %s\n", strerror(errno));
-            return EXIT_FAILURE;
-        }
-        /*need to implement execvpe*/
-
-        /*close write ends*/
-        (void)close(fdout[1]);
-        (void)close(fderr[1]);
-    
-    }
 }
