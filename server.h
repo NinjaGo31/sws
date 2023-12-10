@@ -6,5 +6,8 @@ void handle_connection(int socket_fd);
 void parse(char* buffer, int clientfd);
 void send_response(int clientfd, int code, const char *request);
 void logging(int ip_addr, char err_time_buf, const char *request, int code, char content_len);
+void exec_cgi(int clientfd, const char* request, char *query_str);
+char** cgi_environment(char **environment, const char *request[], char *query_str);
+int file_list(char *basepath, char *list[], size_t size);
 
 #endif

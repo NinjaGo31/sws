@@ -17,7 +17,7 @@
 
 #define PORT_DEFAULT    8080
 
-static const char help[] = 
+static const char help_str[] = 
     " ./sws [-dh] [-i address] [-l file] [-p port number] dir\n"
     " -d                Enter debug mode\n"
     " -h                Print this help message\n"
@@ -28,14 +28,15 @@ static const char help[] =
 
 int server_socket = -1;
 int num = 0;
-int c_flag = 0, l_flag = 0;
+int c_flag = 0, l_flag = 0, debug = 0;
+socklen_t addrlen, serv_size;
 
 void short_usage() {
     fprintf(stderr, "Usage: sws [-dh] [-c dir] [-i address] [-l file] [-p port] <dir>\n");
 }
 
 void usage() {
-    (void)printf("%s", help);
+    (void)printf("%s", help_str);
 }
 
 void cleaning() {
@@ -51,7 +52,7 @@ void cleaning() {
 int main(int argc, char* argv[]) {
     char *ip_addr = NULL;
 
-    int opt = 0, ip = 0, port = 0, help = 0, debug = 0;
+    int opt = 0, ip = 0, port = 0, help = 0;
     int domain = AF_INET6;
     int running = 1;
     int exitval = EXIT_SUCCESS;
@@ -62,7 +63,6 @@ int main(int argc, char* argv[]) {
 
     struct sockaddr_in server4;
     struct sockaddr_in6 server6;
-    socklen_t addrlen, serv_size;
 
     if (argc < 2) {
         usage();

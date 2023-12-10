@@ -31,26 +31,32 @@ enum client_request {REQUEST_TYPE, URI, HTTP_TYPE};
 
 int mod_since = 0;
 
-char** print_list(char* dir) {
-    char *list[BUFFER_SIZE];
-    char file[BUFSIZ];
-    struct dirent *dir_fd;
-    DIR *ptr;
+int file_list(char *basepath, char *list[], size_t size) {
+    struct dirent **dirp;
+    int j = 0;
+    int num_files;
 
-    if ((ptr = opendir(dir)) == NULL) {
-        return NULL;
+    if ((num_files = scandir(basepath, &dirp, NULL, alphasort)) < 0) {
+        return 1;
     }
 
-    while ((dir_fd = readdir(ptr)) != NULL) {
-        list[i++] = dir_fd->d_name;
-        strncpy(file, strlen(dir_fd->d_name));
-        strncat(file, "\n", 1);
-        strncat(list, file);
+    for (int i = 0; i < num_files && j < size; i++) {
+        if (strncmp(dirp[i]->d_name, ".", 1) == 0) continue;
+        else {
+            list[j] = malloc(strlen(dirp[i]->d_name) + 1);
+            strncpy(list[j], dirp[i]->d_name, strlen(dirp[i]->d_name));
+            j++;
+        }
     }
-    return list;
+
+    for (int i = 0; i < num_files; i++) {
+        (void)free(dirp[i]);
+    }
+    (void)free(dirp);
+    return 0;
 }
 
-char ** cgi_environment(char **environment, const char *request[], char *query_str){
+char** cgi_environment(char **environment, const char *request[], char *query_str){
     int i = 0;
     char port_buf[BUFSIZ];
     char req_buf[BUFSIZ];
@@ -306,17 +312,12 @@ void send_response(int clientfd, int code, const char *request[], const char out
     send(clientfd, last_mod_buf, strlen(last_mod_buf), 0);
     send(clientfd, CONTENT_TYPE, strlen(CONTENT_TYPE), 0);
     send(clientfd, content_len, sizeof(content_len), 0);
-
-    if (strncmp(request[REQUEST_TYPE], "GET", 3) == 0) {
-        // Read the file back to the client
-        
-    }
 }
 
 void parse(char buffer[], int clientfd) {
     char *other_requests[] = {"POST", "PUT", "DELETE", "CONNECT", 
                                 "OPTIONS", "TRACE", "PATCH"};
-    char *buf[BUFSIZ], *lines[BUFSIZ];
+    char *buf[BUFSIZ], *lines[BUFSIZ], *list[BUFSIZ];
     char output[BUFFER_SIZE], index_output[BUFFER_SIZE];
     char *client_path, *query_str, *tmp;
     char *arg, *traverse, *line, *nul;
@@ -326,6 +327,7 @@ void parse(char buffer[], int clientfd) {
     int invalid = 1, query_flag = 0;
     size_t arr_len = sizeof(other_requests) / sizeof(other_requests[0]);
     size_t size = strlen(buffer);
+    size_t e = 0;
 
     struct stat fileInfo;
     struct tm time_req, *file_mtime;
@@ -397,20 +399,6 @@ void parse(char buffer[], int clientfd) {
 
     if ((strncmp(buf[REQUEST_TYPE], "GET", 3) == 0)) {
         /* Implement GET functionality */
-        // What errors are we supposed to catch in the GET/HEAD event? How do we handle them?
-        // - The files doesn't exist at all (Send 404)
-        // - The file exists, but the client doesn't have access to the file (Send either 401 or 403)
-        // - The client's request is OUTSIDE of docroot (Send 403)
-        // /home/<user>/sws --> /docroot
-
-        // How can we keep track of where the client is trying to access? Parse by '/' and
-        // keep tally of the name of the directory location?
-        // ANSWER: Construct an absolute/real path with the docroot path and client path,
-        // and then check if the resulting path is under the docroot
-        // USE THE realpath(3) function. Must be under the docroot path.
-        // Do we hard code the docroot path?
-        // No. The last argument is the directory in which you are serving content from. In this case,
-        // create an absolute path using this argument.
         if (c_flag && (strncmp(buf[URI], "/cgi-bin", 8) == 0)) {
             if (access(buf[URI], R_OK | X_OK) != 0) {
                 send_response(clientfd, 403, buf);
@@ -440,10 +428,16 @@ void parse(char buffer[], int clientfd) {
             strncat(index_temp, "/index.html", 10);
             if ((file_fd = open(index_temp, O_RDONLY)) < 0) {
                 /*index.html does not exist*/
-                if ((output = print_list(client_path)) == NULL) {
+                if (file_list(client_path, list, BUFSIZ) == 1) {
                     send_response(clientfd, 500, buf);
+                    return;
                 } else {
                     send_response(clientfd, 200, buf);
+                    for (e = 0; e < sizeof(list) && list[e] != NULL; e++) {
+                        send(clientfd, list[e], strlen(list[e]), 0);
+                        (void)free(list[e]);
+                    }
+                    return;
                 }
             } else {
                 /*index.html exists*/
