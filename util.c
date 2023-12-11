@@ -16,7 +16,7 @@
 
 char *getpath(char *dir) {
     char buffer[PATH_MAX];
-    char *result, *path;
+    char *result;
 
     if (dir[0] == '/' || dir[0] == '\\') {
         dir++;
