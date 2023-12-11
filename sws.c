@@ -5,6 +5,7 @@
 #include <err.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -57,11 +58,10 @@ void cleaning() {
 
 int main(int argc, char* argv[]) {
     char *ip_addr = NULL;
-
+    char buffer[PATH_MAX];
     int opt = 0, ip = 0, help = 0;
     int running = 1;
     int exitval = EXIT_SUCCESS;
-    /*int log_fd;*/
     int i;
     int max_socket;
     fd_set sockset;
@@ -86,12 +86,10 @@ int main(int argc, char* argv[]) {
                 c_flag = 1;
                 cgi_dir = optarg;
                 check_dir(cgi_dir);
-                printf("Execute the CGI here: %s\n", cgi_dir);
                 break;
             case 'i':
                 ip = 1;
                 ip_addr = optarg;
-                printf("Get the IPv4/IPv6 address: %s\n", ip_addr);
                 break;
             case 'l':
                 l_flag = 1;
@@ -103,7 +101,6 @@ int main(int argc, char* argv[]) {
                             strerror(errno));
                     exit(EXIT_FAILURE);
                 }
-                printf("Log the requests into here: %s\n", log_file);
                 break;
             case 'p':
                 if ((parse_port(optarg, &port) == ERROR)) {
@@ -113,7 +110,6 @@ int main(int argc, char* argv[]) {
                     fprintf(stderr, "sws: Port number must be in range [1024, 65535]\n");
                     exit(EXIT_FAILURE);
                 }
-                printf("Here's the port number: %s\n", optarg);
                 break;
             case '?':
                 fprintf(stderr, "sws: unknown option: %c\n", optopt);
@@ -121,16 +117,15 @@ int main(int argc, char* argv[]) {
                 exit(EXIT_FAILURE);
         }
     }
-
-    argc -= optind;
-    argv += optind;
     
     if (help) {
         usage();
         exit(EXIT_SUCCESS);
     }
     
-    if ((dir = getpath(argv[optind])) == NULL) {
+    if ((dir = realpath(argv[optind], buffer)) == NULL) {
+        fprintf(stderr, "sws: failed to make resolved path: %s\n",
+                strerror(errno));
         exitval = EXIT_FAILURE;
         cleaning();
         exit(exitval);
@@ -161,6 +156,12 @@ int main(int argc, char* argv[]) {
         }
     }
     
+    if ((server_socket = socket(domain, SOCK_STREAM, 0)) < 0) {
+        exitval = EXIT_FAILURE;
+        cleaning();
+        exit(exitval);
+    }
+
     if (domain == AF_INET) {
         addrlen = sizeof(server4);
         memset(&server4, 0, sizeof(addrlen));
@@ -184,7 +185,7 @@ int main(int argc, char* argv[]) {
             int offset = 0;
             if (setsockopt(server_socket, IPPROTO_IPV6, IPV6_V6ONLY,
                     (void *)&offset, sizeof(offset)) < 0) {
-                fprintf(stderr, "sws: failed to set socket options: %s",
+                fprintf(stderr, "sws: failed to set socket options: %s\n",
                         strerror(errno));
                 exitval = EXIT_FAILURE;
                 cleaning();
@@ -193,7 +194,7 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    if (bind(server_socket, (struct sockaddr *)&server, serv_size) < 0) {
+    if (bind(server_socket, (struct sockaddr *)server, serv_size) < 0) {
         fprintf(stderr, "sws: failed to bind socket to port %d. %s.\n",
                 port, strerror(errno));
         exitval = EXIT_FAILURE;

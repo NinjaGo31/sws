@@ -4,7 +4,8 @@
 void reap();
 void check_dir(char *path);
 char *getpath(char *dir);
-int is_int(const char* port);
-int parse_port(const char* input, int* port);
+int user_dir(char path[], char dir[]);
+int is_int(const char* prt);
+int parse_port(const char* input, int* prt);
 
 #endif
