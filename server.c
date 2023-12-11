@@ -23,7 +23,7 @@
 
 #define BUFFER_SIZE 32768
 #define PARSE_SIZE 4
-#define TIMEOUT 600
+#define TIMEOUT 120
 #define SERVER "Server: sws 1.0\n"
 #define CONTENT_TYPE "Content-Type: text/html\n"
 #define HTTP "HTTP/1.0 "
@@ -102,7 +102,7 @@ char** cgi_environment(char **environment, char *request[], char *query_str){
     
     environment[i++] = "AUTH_TYPE=Basic";
     environment[i++] = "GATEWAY_INTERFACE=CGI/1.1";
-    environment[i++] = "PATH_INFO="; /*need to implement*/
+    /*environment[i++] = "PATH_INFO="; need to implement*/
     sprintf(query, "QUERY_STRING=%s\n", query_str);
     environment[i++] = query;
     sprintf(remote, "REMOTE_ADDR=%s\n", get_ip(CLIENT_IP, ip, INET6_ADDRSTRLEN));
@@ -130,7 +130,7 @@ void exec_cgi(char* request[], char *query_str) {
     int errlen = BUFSIZ -1;
     int outlen = BUFSIZ -1;
     char executable[BUFSIZ];
-    char *environment[11];
+    char *environment[10];
     char *command_args[2];
     char *filename;
     pid_t pid;
@@ -155,11 +155,10 @@ void exec_cgi(char* request[], char *query_str) {
     /*set environment*/
     cgi_environment(environment, request, query_str);
 
-    /*not sure if signals are needed*/
     if ((pid = fork()) < 0) {
         (void)fprintf(stderr, "sws: fork : %s\n", strerror(errno));
         send_response(500, request, NULL);
-        /*return EXIT_FAILURE;*/
+        return EXIT_FAILURE;
     }
 
     if (pid > 0) {
@@ -171,13 +170,13 @@ void exec_cgi(char* request[], char *query_str) {
         if ((n = read(fdout[0], outbuf, outlen)) < 0){
             (void)fprintf(stderr, "sws: Unable to read from pipe: %s\n", strerror(errno));
             send_response(500, request, NULL);
-            /*return EXIT_FAILURE;*/
+            return EXIT_FAILURE;
         }
 
         if ((n = read(fderr[0], errbuf, errlen)) < 0) {
             (void)fprintf(stderr, "sws: Unable to read from pipe: %s\n", strerror(errno));
             send_response(500, request, NULL);
-            /*return EXIT_FAILURE;*/
+            return EXIT_FAILURE;
         }
         /*close read ends*/
         (void)close(fdout[0]);
@@ -187,7 +186,7 @@ void exec_cgi(char* request[], char *query_str) {
             (void)fprintf(stderr, "sws: waitpid: %s\n", strerror(errno));
             send_response(500, request, NULL);
             return;
-            /*return EXIT_FAILURE;*/
+            return EXIT_FAILURE;
         }
     } else {
         /*child process*/
@@ -199,21 +198,21 @@ void exec_cgi(char* request[], char *query_str) {
             (void)fprintf(stderr, "sws: dup2 to stdout: %s\n", strerror(errno));
             send_response(500, request, NULL);
             return;
-            /*return EXIT_FAILURE;*/
+            return EXIT_FAILURE;
         }
 
         if (dup2(fderr[1], STDERR_FILENO) < 0){
             (void)fprintf(stderr, "sws: dup2 to stderr: %s\n", strerror(errno));
             send_response(500, request, NULL);
             return;
-           /*return EXIT_FAILURE;*/
+           return EXIT_FAILURE;
         }
 
         if (chdir(cgi_dir) < 0){
             (void)fprintf(stderr, "sws: could not change to directory: %s\n", 
                             strerror(errno));
             send_response(500, request, NULL);
-           /*return EXIT_FAILURE;*/
+           return EXIT_FAILURE;
         }
         execvpe(executable, command_args, environment);
         /*close write ends*/
@@ -340,9 +339,7 @@ void send_response(int code, char *request[], const char *path) {
     
 
     if ((l_flag && log_fd > 0) || debug) {
-        /*get client IP address*/
         get_ip(CLIENT_IP, ip_addr, INET6_ADDRSTRLEN);
-        /*time request was recieved*/
         time(&err_time);
         gmt = *gmtime(&err_time);
         strftime(err_time_buf, sizeof(err_time_buf), "%Y-%B-%dT%H:%M:%SZ", &gmt);
@@ -412,9 +409,9 @@ void parse(char buffer[]) {
     tmp = strtok(NULL, "?");
     if (tmp != NULL) query_str = tmp;
 
-    if (lines[1] != NULL) {
+    if ((lines[1] != NULL) && (strncmp(lines[1], "\n", 1) != 0)) {
         arg = strtok(lines[1], ":");
-        if (strncmp(arg, "If-Modified-Since", 18) != 0) {
+        if ((strncmp(arg, "If-Modified-Since", 18) != 0)) {
             send_response(400, buf, NULL);
             return;
         } else {
@@ -473,7 +470,6 @@ void parse(char buffer[]) {
     }
 
     if ((strncmp(buf[REQUEST_TYPE], "GET", 3) == 0)) {
-        /* Implement GET functionality */
         if (c_flag && (strncmp(tmp_path, "/cgi-bin", 8) == 0)) {
             if (access(client_path, R_OK | X_OK) != 0) {
                 send_response(403, buf, NULL);
@@ -500,7 +496,7 @@ void parse(char buffer[]) {
         /*client path is a directory*/
         if (S_ISDIR(fileInfo.st_mode)) {
             strcpy(index_temp, client_path);
-            strncat(index_temp, "/index.html", 10);
+            strncat(index_temp, "/index.html", 11);
             if ((file_fd = open(index_temp, O_RDONLY)) < 0) {
                 /*index.html does not exist*/
                 if (file_list(client_path, list, BUFSIZ) == 1) {
@@ -522,11 +518,13 @@ void parse(char buffer[]) {
                     close(file_fd);
                     return;
                 }
-                send_response(200, buf, client_path);
-                while((n = read(file_fd, index_output, sizeof(index_output))) != -1 && n !=0){
+                lseek(file_fd, 0, SEEK_SET);
+                send_response(200, buf, index_temp);
+                while((n = read(file_fd, index_output, sizeof(index_output))) != -1 && n !=0) {
                     send(clientfd, index_output, strlen(index_output), 0);
                 }
                 close(file_fd);
+                return;
             }
         /*client path is a file*/
         } else if (S_ISREG(fileInfo.st_mode)){
@@ -574,16 +572,19 @@ void parse(char buffer[]) {
 
 void handle_connection() {
     int read_val;
+    char buf[BUFSIZ];
+    char req[BUFSIZ];
+    bzero(req, sizeof(req));
     do {
-        char buf[BUFSIZ];
         bzero(buf, sizeof(buf));
         if ((read_val = read(clientfd, buf, BUFSIZ)) < 0) {
            send_response(500, NULL, NULL);
            return;
-        } else {
-            parse(buf);
         }
-    } while(read_val != 0);
+        strncat(req, buf, strlen(buf));
+    } while(read_val != 0 && !(strncmp(buf, "\r\n", 2) == 0));
+    parse(req);
+
     (void)close(clientfd);
 }
 
