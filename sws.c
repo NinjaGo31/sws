@@ -26,9 +26,15 @@ static const char help_str[] =
     " -p port number    Make server on this port\n"
     ;
 
+char *cgi_dir = NULL;
+char *dir = NULL;
+char *log_file = NULL;
+
+int domain = AF_INET6;
 int server_socket = -1;
 int num = 0;
 int c_flag = 0, l_flag = 0, debug = 0;
+int port;
 socklen_t addrlen, serv_size;
 
 void short_usage() {
@@ -52,8 +58,7 @@ void cleaning() {
 int main(int argc, char* argv[]) {
     char *ip_addr = NULL;
 
-    int opt = 0, ip = 0, port = 0, help = 0;
-    int domain = AF_INET6;
+    int opt = 0, ip = 0, help = 0;
     int running = 1;
     int exitval = EXIT_SUCCESS;
     /*int log_fd;*/

@@ -14,13 +14,35 @@
 #define RET_OK 0
 #define OK 1
 
+void user_dir(char path[], char dir[]) {
+    struct passwd *pwd;
+    char *name;
+    char *remainder;
+    char file[BUFSIZ];
+    bzero(file, sizeof(file));
+    path += 2;
+    
+    name = strtok(path, "/");
+    while ((remainder = strtok(NULL, "/")) != NULL) {
+        strncat(file, "/", 1);
+        strncat(file, remainder, strlen(remainder));
+    }
+    strncat(file, "\0", 1);
+
+    if ((pwd = getpwnam(name)) == NULL) {
+        perror("getpwnam() error");
+    }
+
+    strncpy(dir, pwd->pw_dir, strlen(pwd->pw_dir));
+    strncat(dir, file, strlen(file));
+}
+
 char *getpath(char *dir) {
     char buffer[PATH_MAX];
     char *result;
 
-    if (dir[0] == '/' || dir[0] == '\\') {
-        dir++;
-    }
+    if (dir[0] != '/') return NULL;
+    else dir++;
 
     if ((result = realpath(dir, buffer)) == NULL) {
         fprintf(stderr, "sws: failed to make resolved path: %s\n",

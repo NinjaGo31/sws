@@ -4,6 +4,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/param.h>
+#include <sys/wait.h>
 
 #include <dirent.h>
 #include <err.h>
@@ -28,8 +29,38 @@
 #define HTTP "HTTP/1.0 "
 
 enum client_request {REQUEST_TYPE, URI, HTTP_TYPE};
+enum cli_or_serv {SERVER_IP, CLIENT_IP};
 
-int mod_since = 0;
+int mod_since = 0, clientfd = -1;
+struct sockaddr_in6 client;
+socklen_t cliaddrlen;
+
+char *get_ip(int req_cli_ip, char *ip) {
+    struct sockaddr_storage addr;
+    struct sockaddr_in *s4;
+    struct sockaddr_in6 *s6;
+    socklen_t length;
+
+    /*char ip[INET6_ADDRSTRLEN];*/
+    if (req_cli_ip) { /* Request Client IP */
+        if (getpeername(clientfd, (struct sockaddr *)&addr, &length) < 0) {
+            return NULL;
+        }
+    } else { /* Request Server IP */
+        if (getpeername(server_socket, (struct sockaddr *)&addr, &length) < 0) {
+            return NULL;
+        }
+    }
+    if (domain == AF_INET) {
+        s4 = (struct sockaddr_in *)&addr;
+        inet_ntop(AF_INET, &s4->sin_addr, ip, sizeof(ip));
+    } else {
+        s6 = (struct sockaddr_in6 *)&addr;
+        inet_ntop(AF_INET6, &s6->sin6_addr, ip, sizeof(ip));
+    }
+
+    return ip;
+}
 
 int file_list(char *basepath, char *list[], size_t size) {
     struct dirent **dirp;
@@ -63,7 +94,8 @@ char** cgi_environment(char **environment, char *request[], char *query_str){
     char serv_name[BUFSIZ];
     char script_name[BUFSIZ];
     char query[BUFSIZ];
-    char hostname[BUFSIZ];
+    char remote[BUFSIZ];
+    char ip[INET6_ADDRSTRLEN];
 
     if(getsockname(server_socket,(struct sockaddr*) server, &serv_size) == -1){
         fprintf(stderr, "sws: getsockname error: %s\n", strerror(errno));
@@ -74,14 +106,15 @@ char** cgi_environment(char **environment, char *request[], char *query_str){
     environment[i++] = "PATH_INFO="; /*need to implement*/
     sprintf(query, "QUERY_STRING=%s\n", query_str);
     environment[i++] = query;
-    environment[i++] = "REMOTE_ADDR="; /*need to implement*/
+    sprintf(remote, "REMOTE_ADDR=%s\n", get_ip(CLIENT_IP, ip));
+    environment[i++] = remote;
     sprintf(req_buf, "REQUEST_METHOD=%s\n", request[REQUEST_TYPE]);
     environment[i++] = req_buf;
     sprintf(script_name, "SCRIPT_NAME=%s\n", request[URI]);
     environment[i++] = script_name;
-    sprintf(serv_name, "SERVER_NAME=%s\n", gethostname(hostname, BUFSIZ));
+    sprintf(serv_name, "SERVER_NAME=%s\n", get_ip(SERVER_IP, ip));
     environment[i++] = serv_name;
-    sprintf(port_buf, "SERVER_PORT=%d\n", ntohs(server.sin_port)); /*need to fix*/
+    sprintf(port_buf, "SERVER_PORT=%d\n", port);
     environment[i++] = port_buf;
     environment[i++] = "SERVER_PROTOCOL=HTTP/1.0";
     environment[i++] = "SERVER_SOFTWARE=Apache/2.4.54 (Unix) OpenSSL/1.1.1k";
@@ -90,15 +123,15 @@ char** cgi_environment(char **environment, char *request[], char *query_str){
 
 }
 
-void exec_cgi(int clientfd, char* request[], char *query_str) {
+void exec_cgi(char* request[], char *query_str) {
     int fdout[2], fderr[2];
     int n;
     char *outbuf[BUFSIZ];
     char *errbuf[BUFSIZ]; 
     int errlen = BUFSIZ -1;
     int outlen = BUFSIZ -1;
-    char *executable[BUFSIZ];
-    char *environment[12];
+    char executable[BUFSIZ];
+    char *environment[11];
     char *command_args[2];
     char *filename;
     pid_t pid;
@@ -113,12 +146,12 @@ void exec_cgi(int clientfd, char* request[], char *query_str) {
 
     if (pipe(fdout) < 0) {
         (void)fprintf(stderr, "sws: pipe : %s\n", strerror(errno));
-        send_response(clientfd, 500, request);
+        send_response(500, request);
     }
 
     if (pipe(fderr) < 0) {
         (void)fprintf(stderr, "sws: pipe : %s\n", strerror(errno));
-        send_response(clientfd, 500, request);
+        send_response(500, request);
     }
     /*set environment*/
     cgi_environment(environment, request, query_str);
@@ -126,7 +159,7 @@ void exec_cgi(int clientfd, char* request[], char *query_str) {
     /*not sure if signals are needed*/
     if ((pid = fork()) < 0) {
         (void)fprintf(stderr, "sws: fork : %s\n", strerror(errno));
-        send_response(clientfd, 500, request);
+        send_response(500, request);
         /*return EXIT_FAILURE;*/
     }
 
@@ -138,13 +171,13 @@ void exec_cgi(int clientfd, char* request[], char *query_str) {
 
         if ((n = read(fdout[0], outbuf, outlen)) < 0){
             (void)fprintf(stderr, "sws: Unable to read from pipe: %s\n", strerror(errno));
-            send_response(clientfd, 500, request);
+            send_response(500, request);
             /*return EXIT_FAILURE;*/
         }
 
         if ((n = read(fderr[0], errbuf, errlen)) < 0) {
             (void)fprintf(stderr, "sws: Unable to read from pipe: %s\n", strerror(errno));
-            send_response(clientfd, 500, request);
+            send_response(500, request);
             /*return EXIT_FAILURE;*/
         }
         /*close read ends*/
@@ -153,7 +186,7 @@ void exec_cgi(int clientfd, char* request[], char *query_str) {
 
         if (waitpid(pid, NULL, 0) < 0){
             (void)fprintf(stderr, "sws: waitpid: %s\n", strerror(errno));
-            send_response(clientfd, 500, request);
+            send_response(500, request);
             return;
             /*return EXIT_FAILURE;*/
         }
@@ -165,14 +198,14 @@ void exec_cgi(int clientfd, char* request[], char *query_str) {
 
         if (dup2(fdout[1], STDOUT_FILENO) < 0){
             (void)fprintf(stderr, "sws: dup2 to stdout: %s\n", strerror(errno));
-            send_response(clientfd, 500, request);
+            send_response(500, request);
             return;
             /*return EXIT_FAILURE;*/
         }
 
         if (dup2(fderr[1], STDERR_FILENO) < 0){
             (void)fprintf(stderr, "sws: dup2 to stderr: %s\n", strerror(errno));
-            send_response(clientfd, 500, request);
+            send_response(500, request);
             return;
            /*return EXIT_FAILURE;*/
         }
@@ -180,28 +213,27 @@ void exec_cgi(int clientfd, char* request[], char *query_str) {
         if (chdir(cgi_dir) < 0){
             (void)fprintf(stderr, "sws: could not change to directory: %s\n", 
                             strerror(errno));
-            send_response(clientfd, 500, request);
+            send_response(500, request);
            /*return EXIT_FAILURE;*/
         }
         execvpe(executable, command_args, environment);
         /*close write ends*/
         (void)close(fdout[1]);
         (void)close(fderr[1]);
-    
     }
 }
 
-void logging(int ip_addr, char *err_time_buf, char *request[], 
+void logging(char *ip_addr, char *err_time_buf, char *request[], 
                 int code, char *content_len) {
     char log_output[BUFSIZ];
     int nr;
 
-    sprintf(log_output, "%d %s \"%s %s %s\" %d %s\r\n", ip_addr, 
+    sprintf(log_output, "%s %s \"%s %s %s\" %d %s\r\n", ip_addr, 
                 err_time_buf, request[REQUEST_TYPE], request[URI],
                 request[HTTP_TYPE], code, content_len);
 
     if(debug){
-        fprintf(stdout, "%d %s \"%s %s %s\" %d %s\r\n", ip_addr, 
+        fprintf(stdout, "%s %s \"%s %s %s\" %d %s\r\n", ip_addr, 
                 err_time_buf, request[REQUEST_TYPE], request[URI],
                 request[HTTP_TYPE], code, content_len);
     }
@@ -214,7 +246,7 @@ void logging(int ip_addr, char *err_time_buf, char *request[],
 
 }
 
-void send_response(int clientfd, int code, char *request[]) {
+void send_response(int code, char *request[]) {
     char* status_str;
     time_t curr_time;
     time_t err_time;
@@ -226,7 +258,7 @@ void send_response(int clientfd, int code, char *request[]) {
     struct tm gmt;
     struct stat last_mod;
     int error_flag = 0;
-    int ip_addr;
+    char ip_addr[INET6_ADDRSTRLEN];
 
     switch(code) {
         case 200:
@@ -287,9 +319,11 @@ void send_response(int clientfd, int code, char *request[]) {
     /*send server*/
     
     /*send last modified*/
-    stat(request[URI], &last_mod);
-    gmt = *gmtime(&last_mod.st_mtime);
-    strftime(last_mod_buf, sizeof(last_mod_buf), "Last-Modified: %A, %d %B %Y %H:%M:%S GMT\r\n", &gmt);
+    if (request != NULL) {
+        stat(request[URI], &last_mod);
+        gmt = *gmtime(&last_mod.st_mtime);
+        strftime(last_mod_buf, sizeof(last_mod_buf), "Last-Modified: %A, %d %B %Y %H:%M:%S GMT\r\n", &gmt);
+    }
 
     /*send content length*/
     if (error_flag == 1) {
@@ -300,8 +334,8 @@ void send_response(int clientfd, int code, char *request[]) {
     
 
     if ((l_flag && log_fd > 0) || debug) {
-        /*get IP address*/
-        ip_addr = inet_ntop(server.sin_addr);
+        /*get client IP address*/
+        get_ip(CLIENT_IP, ip_addr);
         /*time request was recieved*/
         time(&err_time);
         gmt = *gmtime(&err_time);
@@ -318,25 +352,30 @@ void send_response(int clientfd, int code, char *request[]) {
     send(clientfd, content_len, sizeof(content_len), 0);
 }
 
-void parse(char buffer[], int clientfd) {
+void parse(char buffer[]) {
     char *other_requests[] = {"POST", "PUT", "DELETE", "CONNECT", 
                                 "OPTIONS", "TRACE", "PATCH"};
     char *buf[BUFSIZ], *lines[BUFSIZ], *list[BUFSIZ];
     char output[BUFFER_SIZE], index_output[BUFFER_SIZE];
+    char user[PATH_MAX], client_dir[PATH_MAX];
     char *client_path, *tmp_path, *query_str, *tmp;
     char *arg, *traverse, *nul;
     char index_temp[BUFSIZ];
 
     int i, file_fd, n;
-    int invalid = 1;
+    int user_path = 0, invalid = 1;
     size_t arr_len = sizeof(other_requests) / sizeof(other_requests[0]);
     size_t size = strlen(buffer);
     size_t e = 0;
+    size_t index;
 
     struct stat fileInfo;
-    struct tm time_req, *file_mtime;
+    struct tm time_req, tm, *file_mtime;
     time_t raw_file_time, raw_time_req;
+
+    file_mtime = &tm;
     memset(&time_req, 0, sizeof(time_req));
+    memset(&tm, 0, sizeof(tm));
 
     /* Parsing */
     traverse = buffer;
@@ -366,38 +405,60 @@ void parse(char buffer[], int clientfd) {
     if (lines[1] != NULL) {
         arg = strtok(lines[1], ":");
         if (strncmp(arg, "If-Modified-Since", 18) != 0) {
-            send_response(clientfd, 400, buf);
+            send_response(400, buf);
             return;
         } else {
             mod_since = 1;
             arg = strtok(NULL, ":");
             if (strptime(arg, "%a, %d %m %Y %H:%M:%S GMT", &time_req) == NULL) {
-                send_response(clientfd, 400, buf);
+                send_response(400, buf);
                 return;
             }
             if ((raw_time_req = mktime(&time_req)) < 0) {
-                send_response(clientfd, 500, buf);
+                send_response(500, buf);
                 return;
             }
         }
     }
 
-    if ((client_path = getpath(tmp_path)) == NULL) {
-        if (errno == ENOENT) {
-            send_response(clientfd, 404, buf);
-            return;
-        } else {
-            send_response(clientfd, 400, buf);
+    if (tmp_path[0] != '/') {
+        send_response(400, buf);
+        return;
+    } else {
+        tmp_path++;
+    }
+
+    if (tmp_path[0] == '~') {
+        user_path = 1;
+        tmp_path++;
+    }
+
+    if (user_path) {
+        bzero(user, sizeof(user));
+        strncpy(user, tmp_path, strlen(tmp_path));
+        if (user_dir(user, client_dir) == NULL) {
+            send_response(400, buf);
             return;
         }
-    } else if (strncmp(dir, client_path, strlen(dir)) != 0) {
-        send_response(clientfd, 403, buf);
-        return;
+        client_path = client_dir;
+    } else {
+        if ((client_path = getpath(tmp_path)) == NULL) {
+            if (errno == ENOENT) {
+                send_response(404, buf);
+                return;
+            } else {
+                send_response(400, buf);
+                return;
+            }
+        } else if ((strncmp(dir, client_path, strlen(dir)) != 0) && !user_path) {
+            send_response(403, buf);
+            return;
+        }
     }
 
     if ((strncmp(buf[HTTP_TYPE], "HTTP/1.0", 8) != 0)) {
         invalid = 0;
-        send_response(clientfd, 501, buf);
+        send_response(501, buf);
         return;
     }
 
@@ -405,25 +466,25 @@ void parse(char buffer[], int clientfd) {
         /* Implement GET functionality */
         if (c_flag && (strncmp(tmp_path, "/cgi-bin", 8) == 0)) {
             if (access(client_path, R_OK | X_OK) != 0) {
-                send_response(clientfd, 403, buf);
+                send_response(403, buf);
                 return;
             } else {
-                send_response(clientfd, 200, buf);
-                exec_cgi(clientfd, buf, query_str);
+                send_response(200, buf);
+                exec_cgi(buf, query_str);
                 return;
             }
         }
         if (stat(client_path, &fileInfo) < 0){
-            send_response(clientfd, 404, buf);
+            send_response(404, buf);
         }
         if (mod_since) {
             gmtime_r(&fileInfo.st_mtime, file_mtime);
             if ((raw_file_time = mktime(file_mtime)) < 0){
-                send_response(clientfd, 500, buf);
+                send_response(500, buf);
                 return;
             }
             if (raw_time_req > raw_file_time) {
-                send_response(clientfd, 304, buf);
+                send_response(304, buf);
             }
         }
         /*client path is a directory*/
@@ -433,10 +494,10 @@ void parse(char buffer[], int clientfd) {
             if ((file_fd = open(index_temp, O_RDONLY)) < 0) {
                 /*index.html does not exist*/
                 if (file_list(client_path, list, BUFSIZ) == 1) {
-                    send_response(clientfd, 500, buf);
+                    send_response(500, buf);
                     return;
                 } else {
-                    send_response(clientfd, 200, buf);
+                    send_response(200, buf);
                     for (e = 0; e < sizeof(list) && list[e] != NULL; e++) {
                         send(clientfd, list[e], strlen(list[e]), 0);
                         (void)free(list[e]);
@@ -446,11 +507,11 @@ void parse(char buffer[], int clientfd) {
             } else {
                 /*index.html exists*/
                 if((n = read(file_fd, index_output, sizeof(index_output))) < 0) {
-                    send_response(clientfd, 500, buf);
+                    send_response(500, buf);
                     close(file_fd);
                     return;
                 }
-                send_response(clientfd, 200, buf);
+                send_response(200, buf);
                 while((n = read(file_fd, index_output, sizeof(index_output))) != -1 && n !=0){
                     send(clientfd, index_output, strlen(index_output), 0);
                 }
@@ -460,72 +521,72 @@ void parse(char buffer[], int clientfd) {
         } else if (S_ISREG(fileInfo.st_mode)){
             if ((file_fd = open(client_path, O_RDONLY)) < 0) {
                 if (errno == ENOENT) {
-                    send_response(clientfd, 404, buf);
+                    send_response(404, buf);
                 } else {
-                    send_response(clientfd, 400, buf);
+                    send_response(400, buf);
                 }
             } else {
-                send_response(clientfd, 200, buf);
+                send_response(200, buf);
                 while((n = read(file_fd, output, sizeof(output))) != -1 && n !=0){
                     send(clientfd, output, strlen(output), 0);
                 }
                 close(file_fd);
             }
         } else {
-            send_response(clientfd, 404, buf);
-            close(file_fd);
+            send_response(404, buf);
         }
     } else if (strncmp(buf[REQUEST_TYPE], "HEAD", 4) == 0) {
         if ((file_fd = open(client_path, O_RDONLY)) < 0) {
             if (errno == ENOENT) {
-                send_response(clientfd, 404, buf);
+                send_response(404, buf);
             } else {
-                send_response(clientfd, 400, buf);
+                send_response(400, buf);
             }
         } else {
-            send_response(clientfd, 200, buf);
+            send_response(200, buf);
             (void)close(file_fd);
         }
     } else {
-        for (i = 0; i < arr_len; i++) {
-            if (strncmp(buf[REQUEST_TYPE], other_requests[i],
-                strlen(other_requests[i])) == 0) {
+        for (index = 0; index < arr_len; index++) {
+            if (strncmp(buf[REQUEST_TYPE], other_requests[index],
+                strlen(other_requests[index])) == 0) {
                 invalid = 0;
-                send_response(clientfd, 501, buf);
+                send_response(501, buf);
             }
         }
         if (invalid) {
-            send_response(clientfd, 400, buf);
+            send_response(400, buf);
         }
         /* Child process exits successfully */
     }
 }
 
-void handle_connection(int socket_fd) {
+void handle_connection() {
     int read_val;
     do {
         char buf[BUFSIZ];
         bzero(buf, sizeof(buf));
-        if ((read_val = read(socket_fd, buf, BUFSIZ)) < 0) {
-           send_response(socket_fd, 500, buf);
+        if ((read_val = read(clientfd, buf, BUFSIZ)) < 0) {
+           send_response(500, NULL);
            return;
         } else {
-            parse(buf, socket_fd);
+            parse(buf);
         }
     } while(read_val != 0);
-    (void)close(socket_fd);
+    (void)close(clientfd);
 }
 
 int server_socket_handle() {
-    int new_socket;
     pid_t pid;
-    
-    if ((new_socket = accept(server_socket, (struct sockaddr *)&server,
-                            &addrlen)) < 0 && errno != EINTR) {
+
+    cliaddrlen = sizeof(client);
+    if ((clientfd = accept(server_socket, (struct sockaddr *)&client,
+                    &cliaddrlen)) < 0 && errno != EINTR) {
         fprintf(stderr, "sws: failed to accepted incoming connection. %s.\n",
                 strerror(errno));
         return EXIT_FAILURE;
     }
+
     /* Create child process that handles server socket */
     if ((pid = fork()) < 0) {
         fprintf(stderr, "sws: unable to fork process %s\n", strerror(errno));
@@ -535,7 +596,7 @@ int server_socket_handle() {
             fprintf(stderr, "sws: alarm unable to set timeout %s\n", strerror(errno));
         }
 
-        handle_connection(new_socket);
+        handle_connection();
     }
     /*Wait for client to send a message for a given amount of time (set an alarm before the read)*/
     (void)alarm(0);
